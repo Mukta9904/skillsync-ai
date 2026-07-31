@@ -159,10 +159,17 @@ ${jobDescription}
 }
 
 async function generatePdfFromHtml(htmlContent) {
+  // We remove executablePath so Puppeteer uses the Linux browser
+  // we installed during the EC2 setup via 'npx puppeteer browsers install chrome'
   const browser = await puppeteer.launch({
-    executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    headless: true // Ensures it runs invisibly in the background
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage' // Prevents memory crashes on smaller EC2 instances
+    ]
   });
+
   const page = await browser.newPage();
   await page.setContent(htmlContent, { waitUntil: "networkidle0" });
 
