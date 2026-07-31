@@ -5,44 +5,92 @@ const {
 } = require("../services/ai.service");
 const interviewReportModel = require("../models/interviewReport.model");
 
+function sanitizeSkillGaps(skillGaps) {
+  if (!Array.isArray(skillGaps)) return [];
+
+  return skillGaps
+    .map((gap) => {
+      // If Gemini returned a plain string like "Docker"
+      if (typeof gap === "string") {
+        return { skill: gap, severity: "medium" };
+      }
+      // If Gemini returned a valid object
+      if (typeof gap === "object" && gap !== null && gap.skill) {
+        const severity = ["low", "medium", "high"].includes(gap.severity)
+          ? gap.severity
+          : "medium";
+        return { skill: String(gap.skill), severity };
+      }
+      // Drop any invalid primitive values like numbers or booleans
+      return null;
+    })
+    .filter(Boolean); // Filter out null values
+}
+
 /**
  * @description Controller to generate interview report based on user self description, resume and job description.
  */
+
 async function generateInterViewReportController(req, res) {
-  const resumeContent = await new pdfParse.PDFParse(
-    Uint8Array.from(req.file.buffer),
-  ).getText();
-  const { selfDescription, jobDescription } = req.body;
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ message: "Resume PDF file is required." });
+    }
 
-  const interViewReportByAi = await generateInterviewReport({
-    resume: resumeContent.text,
-    selfDescription,
-    jobDescription,
-  });
-  // console.log(interViewReportByAi)
-  // console.log(req.body)
+    const { selfDescription, jobDescription } = req.body;
+    if (!jobDescription) {
+      return res.status(400).json({ message: "Job description is required." });
+    }
 
-  const data = {
-    user: req.user.id,
-    resume: resumeContent.text,
-    selfDescription,
-    jobDescription,
-    ...interViewReportByAi,
-  };
-//   console.log(JSON.stringify(interViewReportByAi, null, 2));
+    // 1. Parse PDF safely
+    let parsedResumeText = "";
+    try {
+      const resumeContent = await new pdfParse.PDFParse(
+        Uint8Array.from(req.file.buffer),
+      ).getText();
+      parsedResumeText = typeof resumeContent === "string" ? resumeContent : resumeContent.text;
+    } catch (pdfError) {
+      console.error("PDF Parsing error:", pdfError);
+      return res.status(400).json({ message: "Failed to read the resume PDF." });
+    }
 
-//   console.log("Before create:");
-//   console.dir(data, { depth: null });
+    // 2. Call Gemini
+    const interViewReportByAi = await generateInterviewReport({
+      resume: parsedResumeText,
+      selfDescription: selfDescription || "Not provided",
+      jobDescription,
+    });
 
-  const interviewReport = await interviewReportModel.create(data);
+    // 3. Sanitize skillGaps to prevent Mongoose schema crash
+    if (interViewReportByAi.skillGaps) {
+      interViewReportByAi.skillGaps = sanitizeSkillGaps(interViewReportByAi.skillGaps);
+    }
 
-  res.status(201).json({
-    message: "Interview report generated successfully.",
-    interviewReport,
-  });
-//   console.log(interviewReport);
+    // 4. Merge data for MongoDB
+    const data = {
+      user: req.user._id || req.user.id,
+      resume: parsedResumeText,
+      selfDescription: selfDescription || "",
+      jobDescription,
+      ...interViewReportByAi,
+    };
+
+    // 5. Save to MongoDB safely
+    const interviewReport = await interviewReportModel.create(data);
+
+    return res.status(201).json({
+      message: "Interview report generated successfully.",
+      interviewReport,
+    });
+
+  } catch (error) {
+    console.error("Error in generateInterViewReportController:", error);
+    return res.status(500).json({
+      message: "An error occurred while generating the interview report.",
+      error: error.message,
+    });
+  }
 }
-
 /**
  * @description Controller to get interview report by interviewId.
  */
